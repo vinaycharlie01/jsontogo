@@ -280,7 +280,6 @@ func uniqueTypeName(name string, seen []string) string {
 	if !contains(seen, name) {
 		return name
 	}
-
 	i := 0
 	for {
 		newName := name + strconv.Itoa(i)
@@ -332,6 +331,7 @@ func Append(str string) {
 }
 func parseScope(scope interface{}, depth int) {
 	switch v := scope.(type) {
+
 	case nil:
 		// Do nothing for nil
 	case []interface{}:
@@ -436,66 +436,86 @@ func extractKeys(keys []reflect.Value) []string {
 	}
 	return result
 }
-
 func parseStruct(depth int, innerTabs int, scope map[string]interface{}, omitempty map[string]bool) {
 	if flattens {
 		stack = append(stack, strings.Repeat("\t", innerTabs))
 	}
 
-	// var seenTypeNames []string{}
+	const structTemplate = "struct {\n"
+	const typeTemplate = "type %s struct {\n"
 
-	seenTypeNames := []string{}
+	const tagTemplate = "`json:\"%s"
+	const omitemptyTemplate = ",omitempty"
+	const exampleTemplate = "\" example:\"%v"
+
+	var seenTypeNames []string
+
 	if flattens && depth >= 2 {
-		parentType := fmt.Sprintf("type %s struct {\n", parent)
+		parentType := fmt.Sprintf(typeTemplate, parent)
 		scopeKeys := FormatScopeKeys(extractKeys(reflect.ValueOf(scope).MapKeys()))
+
 		if seen, ok := seen[parent]; ok && reflect.DeepEqual(scopeKeys, seen) {
 			stack = stack[:len(stack)-1]
 			return
 		}
+
 		seen[parent] = scopeKeys
 
 		appender(parentType)
 		innerTabs++
+
 		keys := reflect.ValueOf(scope).MapKeys()
+
 		for _, key := range keys {
 			keyname := GetOriginalName(key.String())
 			indenter(innerTabs)
+
 			typename := uniqueTypeName(Format(keyname), seenTypeNames)
 			seenTypeNames = append(seenTypeNames, typename)
 
-			appender(typename + " ")
+			appender(fmt.Sprintf("%s ", typename))
 			parent = typename
 			parseScope(scope[key.String()], depth)
-			appender(fmt.Sprintf("`json:\"%s", keyname))
+			appender(fmt.Sprintf(tagTemplate, keyname))
+
 			if allOmitemptys || (omitempty != nil && omitempty[key.String()]) {
-				appender(",omitempty")
+				appender(omitemptyTemplate)
 			}
-			appender("\"`\n")
+
+			appender("`\n")
 		}
+
 		indenter(innerTabs - 1)
 		appender("}")
 	} else {
-		Append("struct {\n")
+		Append(structTemplate)
 		tabs++
+
 		keys := reflect.ValueOf(scope).MapKeys()
+
 		for _, key := range keys {
 			keyname := GetOriginalName(key.String())
 			indent(tabs)
+
 			typename := uniqueTypeName(Format(keyname), seenTypeNames)
 			seenTypeNames = append(seenTypeNames, typename)
 
-			Append(typename + " ")
+			Append(fmt.Sprintf("%s ", typename))
 			parent = typename
 			parseScope(scope[key.String()], depth)
-			Append(fmt.Sprintf("`json:\"%s", keyname))
+			Append(fmt.Sprintf(tagTemplate, keyname))
+
 			if allOmitemptys || (omitempty != nil && omitempty[key.String()]) {
-				Append(",omitempty")
+				Append(omitemptyTemplate)
 			}
+
 			if examples && scope[key.String()] != "" && reflect.TypeOf(scope[key.String()]).Kind() != reflect.Map {
-				Append(fmt.Sprintf("\" example:\"%v", scope[key.String()]))
+				Append(fmt.Sprintf(exampleTemplate, scope[key.String()]))
 			}
-			Append("\"`\n")
+
+			Append("`\n")
 		}
+
 		indent(tabs - 1)
 		Append("}")
 	}
@@ -523,7 +543,7 @@ func indenter(tabs int) {
 }
 func main() {
 
-	jsonStr := `{"name": "John", "time": "2023","age":1, "city": "New York","temp":{}}`
+	jsonStr := `{"login":"octocat","id":1,"avatar_url":"https://github.com/images/error/octocat_happy.gif","gravatar_id":"somehexcode","url":"https://api.github.com/users/octocat","html_url":"https://github.com/octocat","followers_url":"https://api.github.com/users/octocat/followers","following_url":"https://api.github.com/users/octocat/following{/other_user}","gists_url":"https://api.github.com/users/octocat/gists{/gist_id}","starred_url":"https://api.github.com/users/octocat/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/octocat/subscriptions","organizations_url":"https://api.github.com/users/octocat/orgs","repos_url":"https://api.github.com/users/octocat/repos","events_url":"https://api.github.com/users/octocat/events{/privacy}","received_events_url":"https://api.github.com/users/octocat/received_events","type":{"name":"vinay"},"site_admin":false}`
 	typeName := "Person"
 
 	res, _ := jsonToGo(jsonStr, typeName, false, false, true)
