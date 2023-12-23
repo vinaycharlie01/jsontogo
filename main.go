@@ -470,7 +470,7 @@ func parseStruct(depth int, innerTabs int, scope map[string]interface{}, omitemp
 			if allOmitemptys || (omitempty != nil && omitempty[key.String()]) {
 				appender(",omitempty")
 			}
-			appender("`\"\n")
+			appender("\"`\n")
 		}
 		indenter(innerTabs - 1)
 		appender("}")
@@ -494,7 +494,7 @@ func parseStruct(depth int, innerTabs int, scope map[string]interface{}, omitemp
 			if examples && scope[key.String()] != "" && reflect.TypeOf(scope[key.String()]).Kind() != reflect.Map {
 				Append(fmt.Sprintf("\" example:\"%v", scope[key.String()]))
 			}
-			Append("\"\n")
+			Append("\"`\n")
 		}
 		indent(tabs - 1)
 		Append("}")
@@ -523,7 +523,7 @@ func indenter(tabs int) {
 }
 func main() {
 
-	jsonStr := `{"name": "John", "time": "2023-01-01T12:34:56","age":1, "city": "New York"}`
+	jsonStr := `{"name": "John", "time": "2023","age":1, "city": "New York","temp":{}}`
 	typeName := "Person"
 
 	res, _ := jsonToGo(jsonStr, typeName, false, false, true)
