@@ -98,7 +98,7 @@ class JSONToGoConverter:
                 return
             self.seen[self.parent] = scope_keys
 
-            self.appender(f"{parent_type}")
+            self.appender(f"{parent_type}"+" "+"struct {\n")
             self.inner_tabs += 1
             keys = list(scope.keys())
             for key in keys:
@@ -106,13 +106,15 @@ class JSONToGoConverter:
                 self.indenter(self.inner_tabs)
                 typename = self.unique_type_name(self.format(keyname), seen_type_names)
                 seen_type_names.append(typename)
-                self.appender(f"{typename}")
+                self.appender(f"{typename}"+" ")
                 self.parent = typename
                 self.parse_scope(scope[key], depth)
-                self.appender('\n')
-
+                self.appender(' `json:"'+keyname)
+                if self.all_omitempty or self.omitempty and omitempty[key]==True:
+                    self.appender(',omitempty')
+                self.appender('"`\n')
             self.indenter(self.inner_tabs - 1)
-            self.appender("end")
+            self.appender("}")
         else:
             self.append("struct {\n")
             self.tabs += 1
@@ -125,10 +127,15 @@ class JSONToGoConverter:
                 self.append(f"{typename} ")
                 self.parent = typename
                 self.parse_scope(scope[key], depth)
-                self.append('\n')
+                self.append(' `json:"'+keyname)
+                if self.all_omitempty or self.omitempty and omitempty[key]==True:
+                    self.append(',omitempty"')
+                self.append(' bson:"'+keyname)
+                self.append(',omitempty')
+                self.append('"`\n')
 
             self.indent(self.tabs - 1)
-            self.append("}\n")
+            self.append("}")
 
         if self.flatten:
             self.accumulator += self.stack.pop()
@@ -179,27 +186,32 @@ class JSONToGoConverter:
         return string
 
     def go_type(self, val):
-        if val is None:
-            return "any"
-
+        if isinstance(val, bool):
+            return "bool"
         if isinstance(val, str):
-            if self.is_datetime_string(val):
+            if re.match(r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(\+\d\d:\d\d|Z)$', val):
                 return "time.Time"
             else:
                 return "string"
-        elif isinstance(val, (int, float)):
+        if isinstance(val, (int, float)):
             if isinstance(val, int) and -2147483648 < val < 2147483647:
                 return "int"
             else:
                 return "int64" if isinstance(val, int) else "float64"
-        elif isinstance(val, bool):
-            return "bool"
-        elif isinstance(val, list):
-            return "[]interface{}"
+        if isinstance(val, list):
+            b = {}
+            for value in val:
+                if isinstance(value, list):
+                    for item in value:
+                        b[str(type(item).__name__)] = type(item).__name__
+            if len(b)==1:
+                return "[]"+str(type(val[0]).__name__)
+            else:
+                return "[]interface{}"
         elif isinstance(val, dict):
-            return "map[]"
+            return "struct"
         else:
-            return "any"
+            return "interface{}"
 
     def most_specific_possible_go_type(self, typ1, typ2):
         if typ1[:5] == "float" and typ2[:3] == "int":
@@ -209,19 +221,28 @@ class JSONToGoConverter:
         else:
             return "any"
 
-    def to_proper_case(self, string):
-        common_initialisms = [
-            "ACL", "API", "ASCII", "CPU", "CSS", "DNS", "EOF", "GUID", "HTML", "HTTP",
-            "HTTPS", "ID", "IP", "JSON", "LHS", "QPS", "RAM", "RHS", "RPC", "SLA",
-            "SMTP", "SQL", "SSH", "TCP", "TLS", "TTL", "UDP", "UI", "UID", "UUID",
-            "URI", "URL", "UTF8", "VM", "XML", "XMPP", "XSRF", "XSS"
-        ]
+    def to_proper_case(self, s):
+        # Ensure that the SCREAMING_SNAKE_CASE is converted to snake_case
+        if re.match("^[_A-Z0-9]+$", s):
+            s = s.lower()
 
-        if re.match(r'^[_A-Z0-9]+$', string):
-            string = string.lower()
+        # List of common initialisms
+        common_initialisms = {
+            "ACL", "API", "ASCII", "CPU", "CSS", "DNS",
+            "EOF", "GUID", "HTML", "HTTP", "HTTPS", "ID",
+            "IP", "JSON", "LHS", "QPS", "RAM", "RHS",
+            "RPC", "SLA", "SMTP", "SQL", "SSH", "TCP",
+            "TLS", "TTL", "UDP", "UI", "UID", "UUID",
+            "URI", "URL", "UTF8", "VM", "XML", "XMPP",
+            "XSRF", "XSS",
+        }
 
-        return re.sub(r'(^|[^a-zA-Z])([a-z]+)', lambda m: (m.group(1) + m.group(2).upper()), string)
+        # Convert the string to Proper Case
+        s = re.sub(r'(^|[^a-zA-Z])([a-z]+)', lambda match: match.group(1) + match.group(2).upper() if match.group(2).upper() in common_initialisms else match.group(1) + match.group(2).capitalize(), s)
 
+        s = re.sub(r'([A-Z])([a-z]+)', lambda match: match.group(1) + match.group(2) if match.group(1) + match.group(2).upper() in common_initialisms else match.group(1) + match.group(2), s)
+
+        return s
     def uuidv4(self):
         return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(r'[xy]', lambda c: (str(hex(int(c, 16) & 0xf))[2:] if c == 'x' else str(hex(int(c, 16) & 0x3 | 0x8))[2:]))
 
@@ -268,8 +289,15 @@ class JSONToGoConverter:
 
 
 # Example Usage
-json_input = '{"name": "John", "age": 30, "time": "2023-01-01T12:34:56", "city": "New York"}'
+json_input = '{ "id": 1296269, "owner": { "login": "octocat", "id": 1, "avatar_url": "https://github.com/images/error/octocat_happy.gif", "gravatar_id": "somehexcode", "url": "https://api.github.com/users/octocat", "html_url": "https://github.com/octocat", "followers_url": "https://api.github.com/users/octocat/followers", "following_url": "https://api.github.com/users/octocat/following{/other_user}", "gists_url": "https://api.github.com/users/octocat/gists{/gist_id}", "starred_url": "https://api.github.com/users/octocat/starred{/owner}{/repo}", "subscriptions_url": "https://api.github.com/users/octocat/subscriptions", "organizations_url": "https://api.github.com/users/octocat/orgs", "repos_url": "https://api.github.com/users/octocat/repos", "events_url": "https://api.github.com/users/octocat/events{/privacy}", "received_events_url": "https://api.github.com/users/octocat/received_events", "type": "User", "site_admin": false, "listdata":[1,2,3,4], "hello":["heher","rnrnrn",1], "owner": { "login": "octocat", "id": 1, "avatar_url": "https://github.com/images/error/octocat_happy.gif", "gravatar_id": "somehexcode", "url": "https://api.github.com/users/octocat", "html_url": "https://github.com/octocat", "followers_url": "https://api.github.com/users/octocat/followers", "following_url": "https://api.github.com/users/octocat/following{/other_user}", "gists_url": "https://api.github.com/users/octocat/gists{/gist_id}", "starred_url": "https://api.github.com/users/octocat/starred{/owner}{/repo}", "subscriptions_url": "https://api.github.com/users/octocat/subscriptions", "organizations_url": "https://api.github.com/users/octocat/orgs", "repos_url": "https://api.github.com/users/octocat/repos", "events_url": "https://api.github.com/users/octocat/events{/privacy}", "received_events_url": "https://api.github.com/users/octocat/received_events", "type": "User", "site_admin": false, "listdata":[1,2,3,4], "hello":["heher","rnrnrn",1] } }, "site_admin": false, "float": 1202.330, "listdata":[1,2,3,4], "hello":["heher","rnrnrn",1] }'
 typename = "Person"
 converter = JSONToGoConverter(json_input, typename, flatten=False, example=False, all_omitempty=True, bson=True)
 result = converter.convert()
-print(result)
+go_code = f'package main\n\n{result}'
+
+# Write the Go code to a file
+file_path = 'generated_struct.go'
+with open(file_path, 'w') as file:
+    file.write(go_code)
+
+print(f'Go code written to {file_path}')
