@@ -43,8 +43,8 @@ class JSONToGoConverter:
                     slice_type = self.most_specific_possible_go_type(this_type, slice_type)
                     if slice_type == "any":
                         break
-            slice_str = f"[]{self.parent}" if self.flatten and slice_type in ["struct", "slice"] else "[]"
-            # slice_str = f"[]"
+            # slice_str = f"[]{self.parent}" if self.flatten and slice_type in ["struct", "slice"] else "[]"
+            slice_str = f"[]"
             if self.flatten and depth >= 2:
                 self.appender(slice_str)
             else:
@@ -115,7 +115,7 @@ class JSONToGoConverter:
                 self.parent = typename
                 self.parse_scope(scope[key], depth)
                 self.appender(' `json:"'+keyname)
-                if self.all_omitempty or self.omitempty and omitempty[key]==True:
+                if self.all_omitempty or (self.all_omitempty and omitempty[key] == True):
                     self.appender(',omitempty')
                 self.appender('"`\n')
             self.indenter(self.inner_tabs - 1)
@@ -133,8 +133,8 @@ class JSONToGoConverter:
                 self.parent = typename
                 self.parse_scope(scope[key], depth)
                 self.append(' `json:"'+keyname)
-                if self.all_omitempty or self.omitempty and omitempty[key]==True:
-                    self.append(',omitempty"')
+                if self.all_omitempty or (self.all_omitempty and omitempty[key] == True):
+                    self.append(',omitempty')
                 self.append('"`\n')
 
             self.indent(self.tabs - 1)
@@ -245,6 +245,8 @@ class JSONToGoConverter:
         s = re.sub(r'(^|[^a-zA-Z])([a-z]+)', lambda match: match.group(1) + match.group(2).upper() if match.group(2).upper() in common_initialisms else match.group(1) + match.group(2).capitalize(), s)
 
         s = re.sub(r'([A-Z])([a-z]+)', lambda match: match.group(1) + match.group(2) if match.group(1) + match.group(2).upper() in common_initialisms else match.group(1) + match.group(2), s)
+        s = re.sub(r'[^a-zA-Z0-9_]', '', s)
+        s = s.replace('_', '')
 
         return s
     def uuidv4(self):
@@ -293,9 +295,9 @@ class JSONToGoConverter:
 
 
 # Example Usage
-json_input = '[ { "input_index": 0, "candidate_index": 0, "delivery_line_1": "1 N Rosedale St", "last_line": "Baltimore MD 21229-3737", "delivery_point_barcode": "212293737013", "components": { "primary_number": "1", "street_predirection": "N", "street_name": "Rosedale", "street_suffix": "St", "city_name": "Baltimore", "state_abbreviation": "MD", "zipcode": "21229", "plus4_code": "3737", "delivery_point": "01", "delivery_point_check_digit": "3" }, "metadata": { "record_type": "S", "zip_type": "Standard", "county_fips": "24510", "county_name": "Baltimore City", "carrier_route": "C047", "congressional_district": "07", "rdi": "Residential", "elot_sequence": "0059", "elot_sort": "A", "latitude": 39.28602, "longitude": -76.6689, "precision": "Zip9", "time_zone": "Eastern", "utc_offset": -5, "dst": true }, "analysis": { "dpv_match_code": "Y", "dpv_footnotes": "AABB", "dpv_cmra": "N", "dpv_vacant": "N", "active": "Y" } }, { "input_index": 0, "candidate_index": 1, "delivery_line_1": "1 S Rosedale St", "last_line": "Baltimore MD 21229-3739", "delivery_point_barcode": "212293739011", "components": { "primary_number": "1", "street_predirection": "S", "street_name": "Rosedale", "street_suffix": "St", "city_name": "Baltimore", "state_abbreviation": "MD", "zipcode": "21229", "plus4_code": "3739", "delivery_point": "01", "delivery_point_check_digit": "1" }, "metadata": { "record_type": "S", "zip_type": "Standard", "county_fips": "24510", "county_name": "Baltimore City", "carrier_route": "C047", "congressional_district": "07", "rdi": "Residential", "elot_sequence": "0064", "elot_sort": "A", "latitude": 39.2858, "longitude": -76.66889, "precision": "Zip9", "time_zone": "Eastern", "utc_offset": -5, "dst": true }, "analysis": { "dpv_match_code": "Y", "dpv_footnotes": "AABB", "dpv_cmra": "N", "dpv_vacant": "N", "active": "Y" } } ]'
+json_input = '{"_id":{"$oid":"5bd761dcae323e45a93ccfe8"},"saleDate":{"$date":{"$numberLong":"1427144809506"}},"items":[{"name":"printer paper","tags":["office","stationary"],"price":{"$numberDecimal":"40.01"},"quantity":{"$numberInt":"2"}},{"name":"notepad","tags":["office","writing","school"],"price":{"$numberDecimal":"35.29"},"quantity":{"$numberInt":"2"}},{"name":"pens","tags":["writing","office","school","stationary"],"price":{"$numberDecimal":"56.12"},"quantity":{"$numberInt":"5"}},{"name":"backpack","tags":["school","travel","kids"],"price":{"$numberDecimal":"77.71"},"quantity":{"$numberInt":"2"}},{"name":"notepad","tags":["office","writing","school"],"price":{"$numberDecimal":"18.47"},"quantity":{"$numberInt":"2"}},{"name":"envelopes","tags":["stationary","office","general"],"price":{"$numberDecimal":"19.95"},"quantity":{"$numberInt":"8"}},{"name":"envelopes","tags":["stationary","office","general"],"price":{"$numberDecimal":"8.08"},"quantity":{"$numberInt":"3"}},{"name":"binder","tags":["school","general","organization"],"price":{"$numberDecimal":"14.16"},"quantity":{"$numberInt":"3"}}],"storeLocation":"Denver","customer":{"gender":"M","age":{"$numberInt":"42"},"email":"cauho@witwuta.sv","satisfaction":{"$numberInt":"4"}},"couponUsed":true,"purchaseMethod":"Online"}'
 typename = "Person"
-converter = JSONToGoConverter(json_input, typename, flatten=True, example=False, all_omitempty=True)
+converter = JSONToGoConverter(json_input, typename, flatten=False, example=False, all_omitempty=False)
 result = converter.convert()
 go_code = f'package main\n\n{result}'
 
