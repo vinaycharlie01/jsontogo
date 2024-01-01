@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -240,31 +242,19 @@ func goType(val interface{}) string {
 		return "uint"
 	case uint64:
 		return "uint64"
-	case float32:
-		return "float32"
 	case float64:
+		if float64(int(v)) == v {
+			return "int"
+		}
 		return "float64"
 	case bool:
 		return "bool"
 	case []interface{}:
-		return "[]interface{}"
+		return "slice"
 	case map[string]interface{}:
-		return "map[string]interface{}"
-	case [][2]interface{}:
-		return "[][2]interface{}"
-	case interface{}:
-		return "interface{}"
+		return "struct"
 	default:
-		// Check if it's an array or slice
-		valType := reflect.TypeOf(val)
-		switch valType.Kind() {
-		case reflect.Array:
-			return fmt.Sprintf("[%d]%s", valType.Len(), valType.Elem().Name())
-		case reflect.Slice:
-			return fmt.Sprintf("[]%s", valType.Elem().Name())
-		default:
-			return "unknown"
-		}
+		return "any"
 	}
 }
 
@@ -332,12 +322,19 @@ func Append(str string) {
 }
 func parseScope(scope interface{}, depth int) {
 	switch v := scope.(type) {
-	case nil:
-		// Do nothing for nil
+	case map[string]interface{}:
+		if flattens {
+			if depth >= 2 {
+				appender(parent)
+			} else {
+				Append(parent)
+			}
+		}
+		parseStruct(depth+1, innerTabs, v, nil)
 	case []interface{}:
 		var sliceType string
 
-		for i, item := range v {
+		for _, item := range v {
 			thisType := goType(item)
 			if sliceType == "" {
 				sliceType = thisType
@@ -347,81 +344,35 @@ func parseScope(scope interface{}, depth int) {
 					break
 				}
 			}
-			if i == 0 && depth >= 2 {
-				appender("[]")
-			}
+		}
+
+		b := []string{"struct", "slice"}
+		var sliceStr string
+		if flattens && slices.Contains(b, sliceType) {
+			sliceStr = fmt.Sprintf("[]%s", parent)
+		} else {
+			sliceStr = "[]"
+
+		}
+		if flattens && depth >= 2 {
+			appender(sliceStr)
+		} else {
+			Append(sliceStr)
 		}
 
 		if sliceType == "struct" {
-			allFields := make(map[string]struct {
-				value interface{}
-				count int
-			})
-
-			for _, item := range v {
-				fields := reflect.ValueOf(item)
-				for i := 0; i < fields.NumField(); i++ {
-					keyname := fields.Type().Field(i).Name
-					elem, ok := allFields[keyname]
-					if !ok {
-						elem = struct {
-							value interface{}
-							count int
-						}{value: fields.Field(i).Interface()}
-					} else {
-						existingValue := elem.value
-						currentValue := fields.Field(i).Interface()
-
-						if CompareObjects(existingValue, currentValue) {
-							comparisonResult := CompareObjectKeys(
-								reflect.ValueOf(currentValue).MapKeys(),
-								reflect.ValueOf(existingValue).MapKeys(),
-							)
-							if !comparisonResult {
-								keyname = fmt.Sprintf("%s_%s", keyname, Uuidv4())
-								elem = struct {
-									value interface{}
-									count int
-								}{value: currentValue}
-							}
-						}
-					}
-					elem.count++
-					allFields[keyname] = elem
-				}
-			}
-
-			keys := reflect.ValueOf(allFields).MapKeys()
-			structFields := make(map[string]interface{})
-			omitempty := make(map[string]bool)
-
-			for _, key := range keys {
-				keyname := key.Interface().(string)
-				elem := allFields[keyname]
-
-				structFields[keyname] = elem.value
-				omitempty[keyname] = elem.count != len(v)
-			}
-
-			parseStruct(depth+1, innerTabs, structFields, omitempty)
+			parseStruct(depth+1, innerTabs, v[0].(map[string]interface{}), nil)
 		} else if sliceType == "slice" {
 			parseScope(v[0], depth)
 		} else {
-			if depth >= 2 {
-				appender("[]" + sliceType)
+			if flattens && depth >= 2 {
+				appender(sliceType)
 			} else {
-				Append("[]" + sliceType)
+				Append(sliceType)
 			}
 		}
-	case map[string]interface{}:
-		if depth >= 2 {
-			appender(parent)
-		} else {
-			Append(parent)
-		}
-		parseStruct(depth+1, innerTabs, v, nil)
 	default:
-		if depth >= 2 {
+		if flattens && depth >= 2 {
 			appender(goType(v))
 		} else {
 			Append(goType(v))
@@ -446,7 +397,7 @@ func parseStruct(depth int, innerTabs int, scope map[string]interface{}, omitemp
 
 	seenTypeNames := []string{}
 	if flattens && depth >= 2 {
-		parentType := fmt.Sprintf("type %s struct {\n", parent)
+		parentType := fmt.Sprintf("\ntype %s ", parent)
 		scopeKeys := FormatScopeKeys(extractKeys(reflect.ValueOf(scope).MapKeys()))
 		if seen, ok := seen[parent]; ok && reflect.DeepEqual(scopeKeys, seen) {
 			stack = stack[:len(stack)-1]
@@ -454,7 +405,7 @@ func parseStruct(depth int, innerTabs int, scope map[string]interface{}, omitemp
 		}
 		seen[parent] = scopeKeys
 
-		appender(parentType)
+		appender(parentType + " " + "struct {\n")
 		innerTabs++
 		keys := reflect.ValueOf(scope).MapKeys()
 		for _, key := range keys {
@@ -475,7 +426,7 @@ func parseStruct(depth int, innerTabs int, scope map[string]interface{}, omitemp
 		indenter(innerTabs - 1)
 		appender("}")
 	} else {
-		Append("struct {\n")
+		Append("\tstruct {\n")
 		tabs++
 		keys := reflect.ValueOf(scope).MapKeys()
 		for _, key := range keys {
@@ -507,7 +458,11 @@ func parseStruct(depth int, innerTabs int, scope map[string]interface{}, omitemp
 }
 
 func appender(str string) {
-	stack[len(stack)-1] += str
+	if len(stack) > 0 {
+		stack[len(stack)-1] += str
+	} else {
+		stack = append(stack, str)
+	}
 }
 
 func indent(tabs int) {
@@ -523,9 +478,38 @@ func indenter(tabs int) {
 }
 func main() {
 
-	jsonStr := `{"name": "John", "time": "2023","age":1, "city": "New York","temp":{}}`
+	jsonStr := `
+	{"id": 1296269,
+    "owner": {
+        "login": "octocat",
+        "id": 1,
+        "avatar_url": "https://github.com/images/error/octocat_happy.gif",
+        "gravatar_id": "somehexcode",
+        "url": "https://api.github.com/users/octocat",
+        "html_url": "https://github.com/octocat",
+        "followers_url": "https://api.github.com/users/octocat/followers",
+        "following_url": "https://api.github.com/users/octocat/following{/other_user}",
+        "gists_url": "https://api.github.com/users/octocat/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/octocat/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/octocat/subscriptions",
+        "organizations_url": "https://api.github.com/users/octocat/orgs",
+        "repos_url": "https://api.github.com/users/octocat/repos",
+        "events_url": "https://api.github.com/users/octocat/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/octocat/received_events",
+        "type": "User",
+        "site_admin": false
+    }}
+	`
 	typeName := "Person"
 
-	res, _ := jsonToGo(jsonStr, typeName, false, false, true)
-	fmt.Println(res)
+	result, _ := jsonToGo(jsonStr, typeName, false, false, true)
+	goCode := fmt.Sprintf("package main\n\n%s", result)
+
+	// Write the Go code to a file
+	filePath := "generated_struct.go"
+	err := ioutil.WriteFile(filePath, []byte(goCode), 0644)
+	if err != nil {
+		fmt.Println("Error writing to file:", err)
+		return
+	}
 }
