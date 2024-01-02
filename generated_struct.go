@@ -1,12 +1,3 @@
-# json-to-go
-
-### its genarate struct field like below.
-
-
-```go
-
- 
-//  output
 package main
 
 type EventData1 []struct {
@@ -37,5 +28,3 @@ type Analysis struct {
 	DpvVacant    string `json:"dpv_vacant,omitempty"`
 	Active       int    `json:"active,omitempty"`
 }
-
-```
