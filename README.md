@@ -1,6 +1,6 @@
 # json-to-go
 
-### its genarate struct field like below
+### its genarate struct field like below.
 
 
 ```go
