@@ -1,49 +1,256 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"io/ioutil"
+	"os"
+	"os/exec"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/araddon/dateparse"
+	"time"
 )
 
-var allOmitemptys bool
-var flattens bool
-var examples bool
-var data interface{}
-var scope interface{}
-var goCode string
-var tabs int
-var seen = make(map[string]interface{})
-var stack []string
-var accumulator string
-var innerTabs int
-var parent string
+type JSONToGoConverter struct {
+	Data          interface{}
+	Scope         interface{}
+	Go            string
+	Tabs          int
+	Seen          map[string]interface{}
+	Stack         []string
+	Accumulator   string
+	InnerTabs     int
+	Parent        string
+	TypeName      string
+	Flatten       bool
+	Example       bool
+	AllOmitEmpty  bool
+	BSON          bool
+	BSONOmitEmpty bool
+}
 
-func Format(str string) string {
-	str = formatNumber(str)
+func (c *JSONToGoConverter) NewJSONToGoConverter(jsonStr string, typeName string, flatten bool, example bool, allOmitEmpty bool, bson bool, bsonOmitEmpty bool) *JSONToGoConverter {
+	// jsonStr = strings.Replace(jsonStr, ":\\s*\\[?\\s*-?\\d*\\.0", ":$1.1", -1)
+	err := json.Unmarshal([]byte(jsonStr), &c.Data)
+	if err != nil {
+		panic(err)
+	}
+	return &JSONToGoConverter{
+		Data:          c.Data,
+		Scope:         c.Data,
+		Go:            "",
+		Tabs:          0,
+		Seen:          make(map[string]interface{}),
+		Stack:         make([]string, 0),
+		Accumulator:   "",
+		InnerTabs:     0,
+		Parent:        "",
+		TypeName:      c.Format(typeName),
+		Flatten:       flatten,
+		Example:       example,
+		AllOmitEmpty:  allOmitEmpty,
+		BSON:          bson,
+		BSONOmitEmpty: bsonOmitEmpty,
+	}
+}
 
-	sanitized := ToProperCase(str)
+func (c *JSONToGoConverter) Convert() string {
+	c.Append(fmt.Sprintf("type %s ", c.TypeName))
+	c.ParseScope(c.Scope, 0)
+	if c.Flatten {
+		return c.Go + c.Accumulator
+	} else {
+		return c.Go
+	}
+}
+
+func (c *JSONToGoConverter) ParseScope(scope interface{}, depth int) {
+	switch v := scope.(type) {
+	case map[string]interface{}:
+		if c.Flatten {
+			if depth >= 2 {
+				c.Appender(c.Parent)
+			} else {
+
+				c.Append(c.Parent)
+			}
+		}
+		c.ParseStruct(depth+1, c.InnerTabs, v, nil)
+	case []interface{}:
+		sliceType := ""
+		for _, item := range v {
+			thisType := c.GoType(item)
+			if sliceType == "" {
+				sliceType = thisType
+			} else if sliceType != thisType {
+				sliceType = c.MostSpecificPossibleGoType(thisType, sliceType)
+				if sliceType == "any" {
+					break
+				}
+			}
+		}
+		b := []string{"struct", "slice"}
+		var sliceStr string
+		if c.Flatten && slices.Contains(b, sliceType) {
+			sliceStr = fmt.Sprintf("[]%s", c.Parent)
+		} else {
+			sliceStr = "[]"
+
+		}
+		if c.Flatten && depth >= 2 {
+			c.Appender(sliceStr)
+		} else {
+			c.Append(sliceStr)
+		}
+		if sliceType == "struct" {
+			c.ParseStruct(depth+1, c.InnerTabs, v[0].(map[string]interface{}), nil)
+		} else if sliceType == "slice" {
+			c.ParseScope(v[0], depth)
+		} else {
+			if c.Flatten && depth >= 2 {
+				c.Appender(sliceType)
+			} else {
+				c.Append(sliceType)
+			}
+		}
+
+	default:
+		if c.Flatten && depth >= 2 {
+			c.Appender(c.GoType(v))
+		} else {
+			c.Append(c.GoType(v))
+		}
+	}
+}
+
+func (c *JSONToGoConverter) ParseStruct(depth int, innerTabs int, scope map[string]interface{}, omitempty map[string]bool) {
+	if c.Flatten {
+		c.Stack = append(c.Stack, strings.Repeat("\t", innerTabs))
+	}
+	seenTypeNames := make([]string, 0)
+
+	if c.Flatten && depth >= 2 {
+		parentType := fmt.Sprintf("\ntype %s ", c.Parent)
+		scopeKeys := c.formatScopeKeys(extractKeys(reflect.ValueOf(scope).MapKeys()))
+		sort.Strings(scopeKeys)
+		if seenKeys, ok := c.Seen[c.Parent]; ok && reflect.DeepEqual(scopeKeys, seenKeys) {
+			c.Stack = c.Stack[:len(c.Stack)-1]
+			return
+		}
+		c.Seen[c.Parent] = scopeKeys
+
+		c.Appender(fmt.Sprintf("%s struct {\n", parentType))
+		c.InnerTabs += 1
+		keys := reflect.ValueOf(scope).MapKeys()
+
+		for _, key := range keys {
+			keyName := c.GetOriginalName(key.String())
+			c.Indenter(c.InnerTabs)
+			typeName := c.UniqueTypeName(c.Format(keyName), seenTypeNames)
+			seenTypeNames = append(seenTypeNames, typeName)
+			c.Appender(fmt.Sprintf("%s ", typeName))
+			c.Parent = typeName
+			c.ParseScope(scope[key.String()], depth)
+			c.Appender(fmt.Sprintf(" `json:\"%s", keyName))
+
+			if c.AllOmitEmpty || (omitempty != nil && omitempty[key.String()]) {
+				c.Appender(",omitempty")
+			}
+			c.Appender("\"`\n")
+		}
+		c.Indenter(c.InnerTabs - 1)
+		c.Appender("}")
+	} else {
+		c.Append("struct {\n")
+		c.Tabs += 1
+		keys := reflect.ValueOf(scope).MapKeys()
+		// sort.Strings(keys)
+		for _, key := range keys {
+			keyName := c.GetOriginalName(key.String())
+			c.Indent(c.Tabs)
+			typeName := c.UniqueTypeName(c.Format(keyName), seenTypeNames)
+			seenTypeNames = append(seenTypeNames, typeName)
+			c.Append(fmt.Sprintf("%s ", typeName))
+			c.Parent = typeName
+			c.ParseScope(scope[key.String()], depth)
+			c.Append(fmt.Sprintf(" `json:\"%s", keyName))
+
+			if c.AllOmitEmpty || (omitempty != nil && omitempty[key.String()]) {
+				c.Append(",omitempty")
+			}
+			// if c.bson {
+			// 	c.append("\" bson:\"" + keyName)
+			// }
+			// if c.bsonOmitEmpty {
+			// 	c.append(",omitempty")
+			// }
+			c.Append("\"`\n")
+		}
+		c.Indent(c.Tabs - 1)
+		c.Append("}")
+	}
+
+	if c.Flatten {
+		c.Accumulator += c.Stack[len(c.Stack)-1]
+		c.Stack = c.Stack[:len(c.Stack)-1]
+	}
+
+}
+
+func (c *JSONToGoConverter) Indent(tabs int) {
+	c.Appender(strings.Repeat("\t", tabs))
+}
+
+func (c *JSONToGoConverter) Append(str string) {
+	c.Go += str
+}
+
+func (c *JSONToGoConverter) Indenter(tabs int) {
+	c.Stack[len(c.Stack)-1] += strings.Repeat("\t", tabs)
+}
+
+func (c *JSONToGoConverter) Appender(str string) {
+	if len(c.Stack) > 0 {
+		c.Stack[len(c.Stack)-1] += str
+	} else {
+		c.Stack = append(c.Stack, str)
+	}
+}
+
+func (c *JSONToGoConverter) UniqueTypeName(name string, seen []string) string {
+	if !contains(seen, name) {
+		return name
+	}
+
+	i := 0
+	for {
+		newName := name + strconv.Itoa(i)
+		if !contains(seen, newName) {
+			return newName
+		}
+		i++
+	}
+}
+
+func (c *JSONToGoConverter) Format(str string) string {
+	str = c.FormatNumber(str)
+
+	sanitized := c.ToProperCase(str)
 	re := regexp.MustCompile("[^a-zA-Z0-9]")
 	sanitized = re.ReplaceAllString(sanitized, "")
 
 	if sanitized == "" {
 		return "NAMING_FAILED"
 	}
-
-	// After sanitizing, the remaining characters can start with a number.
-	// Run the sanitized string again through formatNumber to ensure the identifier is Num[0-9] or Zero_... instead of 1.
-	return formatNumber(sanitized)
+	return c.FormatNumber(sanitized)
 }
 
-// formatNumber adds a prefix to a number to make an appropriate identifier in Go
-func formatNumber(str string) string {
+func (c *JSONToGoConverter) FormatNumber(str string) string {
 	if str == "" {
 		return ""
 	} else if matched, _ := regexp.MatchString(`^\d+$`, str); matched {
@@ -60,7 +267,46 @@ func formatNumber(str string) string {
 	return str
 }
 
-func ToProperCase(str string) string {
+func (c *JSONToGoConverter) GoType(val interface{}) string {
+	switch v := val.(type) {
+	case bool:
+		return "bool"
+	case string:
+		if c.IsDatetimeString(v) {
+			return "time.Time"
+		}
+		return "string"
+	case int:
+		if -2147483648 < v && v < 2147483647 {
+			return "int"
+		}
+		return "int64"
+	case float64:
+		if float64(int(v)) == v {
+			return "int"
+		}
+		return "float64"
+	case []interface{}:
+		return "slice"
+	case map[string]interface{}:
+		return "struct"
+	default:
+		fmt.Println(val)
+		return "any"
+	}
+}
+
+func (c *JSONToGoConverter) MostSpecificPossibleGoType(typ1 string, typ2 string) string {
+	if strings.HasPrefix(typ1, "float") && strings.HasPrefix(typ2, "int") {
+		return typ1
+	} else if strings.HasPrefix(typ1, "int") && strings.HasPrefix(typ2, "float") {
+		return typ2
+	} else {
+		return "any"
+	}
+}
+
+func (c *JSONToGoConverter) ToProperCase(str string) string {
 	// Ensure that the SCREAMING_SNAKE_CASE is converted to snake_case
 	if match, _ := regexp.MatchString("^[_A-Z0-9]+$", str); match {
 		str = strings.ToLower(str)
@@ -105,94 +351,7 @@ func ToProperCase(str string) string {
 	return str
 }
 
-func compareObjectKeys(itemAKeys, itemBKeys []string) bool {
-	lengthA := len(itemAKeys)
-	lengthB := len(itemBKeys)
-
-	// nothing to compare, probably identical
-	if lengthA == 0 && lengthB == 0 {
-		return true
-	}
-
-	// duh
-	if lengthA != lengthB {
-		return false
-	}
-
-	// Sort the slices to ensure order doesn't matter
-	sort.Strings(itemAKeys)
-	sort.Strings(itemBKeys)
-
-	// Compare each element
-	for i, item := range itemAKeys {
-		if item != itemBKeys[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func FormatScopeKeys(keys []string) []string {
-	for i := range keys {
-		keys[i] = Format(keys[i])
-	}
-	return keys
-}
-
-func CompareObjectKeys(itemAKeys, itemBKeys interface{}) bool {
-	valA := reflect.ValueOf(itemAKeys)
-	valB := reflect.ValueOf(itemBKeys)
-
-	lengthA := valA.Len()
-	lengthB := valB.Len()
-
-	// nothing to compare, probably identical
-	if lengthA == 0 && lengthB == 0 {
-		return true
-	}
-
-	// duh
-	if lengthA != lengthB {
-		return false
-	}
-
-	// Sort the slices to ensure order doesn't matter
-	sort.Slice(itemAKeys, func(i, j int) bool {
-		return fmt.Sprintf("%v", valA.Index(i).Interface()) < fmt.Sprintf("%v", valA.Index(j).Interface())
-	})
-	sort.Slice(itemBKeys, func(i, j int) bool {
-		return fmt.Sprintf("%v", valB.Index(i).Interface()) < fmt.Sprintf("%v", valB.Index(j).Interface())
-	})
-
-	// Compare each element
-	for i := 0; i < lengthA; i++ {
-		if fmt.Sprintf("%v", valA.Index(i).Interface()) != fmt.Sprintf("%v", valB.Index(i).Interface()) {
-			return false
-		}
-	}
-	return true
-}
-
-func CompareObjects(objectA, objectB interface{}) bool {
-	typeObject := reflect.TypeOf(map[string]interface{}{})
-
-	return reflect.TypeOf(objectA) == typeObject &&
-		reflect.TypeOf(objectB) == typeObject
-}
-
-func GetOriginalName(unique string) string {
-	reLiteralUUID := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-	uuidLength := 36
-
-	if len(unique) >= uuidLength {
-		tail := unique[len(unique)-uuidLength:]
-		if reLiteralUUID.MatchString(tail) {
-			return unique[:len(unique)-(uuidLength+1)]
-		}
-	}
-	return unique
-}
-func Uuidv4() string {
+func (c *JSONToGoConverter) UUIDv4() string {
 	uuid := make([]byte, 16)
 	_, err := rand.Read(uuid)
 	if err != nil {
@@ -206,227 +365,31 @@ func Uuidv4() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:])
 }
 
-// Given two types, returns the more specific of the two
-func mostSpecificPossibleGoType(typ1, typ2 string) string {
-	if len(typ1) >= 5 && typ1[:5] == "float" &&
-		len(typ2) >= 3 && typ2[:3] == "int" {
-		return typ1
-	} else if len(typ1) >= 3 && typ1[:3] == "int" &&
-		len(typ2) >= 5 && typ2[:5] == "float" {
-		return typ2
-	} else {
-		return "any"
+func (c *JSONToGoConverter) GetOriginalName(unique string) string {
+	reLiteralUUID := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	uuidLength := 36
+
+	if len(unique) >= uuidLength {
+		tail := unique[len(unique)-uuidLength:]
+		if reLiteralUUID.MatchString(tail) {
+			return unique[:len(unique)-(uuidLength+1)]
+		}
 	}
+	return unique
 }
 
-// / Determines the most appropriate Go type
-func goType(val interface{}) string {
-	if val == nil {
-		return "interface{}"
-	}
-	switch v := val.(type) {
-	case string:
-		if isTime, err := isTimeString(v); err != nil {
-			return "string"
-		} else if isTime {
-			return "time.Time"
-		}
-		return "string"
-	case int:
-		return "int"
-	case int64:
-		return "int64"
-	case uint:
-		return "uint"
-	case uint64:
-		return "uint64"
-	case float32:
-		return "float32"
-	case float64:
-		return "float64"
-	case bool:
-		return "bool"
-	case []interface{}:
-		return "[]interface{}"
-	case map[string]interface{}:
-		return "map[string]interface{}"
-	case [][2]interface{}:
-		return "[][2]interface{}"
-	case interface{}:
-		return "interface{}"
-	default:
-		// Check if it's an array or slice
-		valType := reflect.TypeOf(val)
-		switch valType.Kind() {
-		case reflect.Array:
-			return fmt.Sprintf("[%d]%s", valType.Len(), valType.Elem().Name())
-		case reflect.Slice:
-			return fmt.Sprintf("[]%s", valType.Elem().Name())
-		default:
-			return "unknown"
-		}
-	}
+func (c *JSONToGoConverter) CompareObjects(objectA, objectB interface{}) bool {
+	typeObject := reflect.TypeOf(map[string]interface{}{})
+
+	return reflect.TypeOf(objectA) == typeObject &&
+		reflect.TypeOf(objectB) == typeObject
 }
 
-// Checks if a string represents a valid time using the dateparse package
-func isTimeString(s string) (bool, error) {
-	_, err := dateparse.ParseAny(s)
-	return err == nil, err
-}
-
-// uniqueTypeName generates a unique name to avoid duplicate struct field names.
-// This function appends a number at the end of the field name.
-func uniqueTypeName(name string, seen []string) string {
-	if !contains(seen, name) {
-		return name
+func (c *JSONToGoConverter) FormatScopeKeys(keys []string) []string {
+	for i := range keys {
+		keys[i] = c.Format(keys[i])
 	}
-
-	i := 0
-	for {
-		newName := name + strconv.Itoa(i)
-		if !contains(seen, newName) {
-			return newName
-		}
-		i++
-	}
-}
-
-// contains checks if a string is present in a slice of strings.
-func contains(slice []string, str string) bool {
-	for _, s := range slice {
-		if s == str {
-			return true
-		}
-	}
-	return false
-}
-
-func jsonToGo(jsonStr string, typename string, flatten bool, example bool, allOmitempty bool) (string, error) {
-	flattens = flatten
-	allOmitemptys = allOmitempty
-	examples = example
-
-	// Replace floats to stay as floats
-	jsonStr = strings.Replace(jsonStr, ":\\s*\\[?\\s*-?\\d*\\.0", ":$1.1", -1)
-
-	err := json.Unmarshal([]byte(jsonStr), &data)
-	if err != nil {
-		return "", err
-	}
-	scope = data
-
-	typename = Format(typename)
-
-	goCode += ("type " + typename + " ")
-	// Append(`type ${typename} `)
-	parseScope(data, 0)
-	if flatten {
-		return goCode + accumulator, nil
-	} else {
-		return goCode, nil
-	}
-}
-
-func Append(str string) {
-	goCode += str
-}
-func parseScope(scope interface{}, depth int) {
-	switch v := scope.(type) {
-	case nil:
-		// Do nothing for nil
-	case []interface{}:
-		var sliceType string
-
-		for i, item := range v {
-			thisType := goType(item)
-			if sliceType == "" {
-				sliceType = thisType
-			} else if sliceType != thisType {
-				sliceType = mostSpecificPossibleGoType(thisType, sliceType)
-				if sliceType == "any" {
-					break
-				}
-			}
-			if i == 0 && depth >= 2 {
-				appender("[]")
-			}
-		}
-
-		if sliceType == "struct" {
-			allFields := make(map[string]struct {
-				value interface{}
-				count int
-			})
-
-			for _, item := range v {
-				fields := reflect.ValueOf(item)
-				for i := 0; i < fields.NumField(); i++ {
-					keyname := fields.Type().Field(i).Name
-					elem, ok := allFields[keyname]
-					if !ok {
-						elem = struct {
-							value interface{}
-							count int
-						}{value: fields.Field(i).Interface()}
-					} else {
-						existingValue := elem.value
-						currentValue := fields.Field(i).Interface()
-
-						if CompareObjects(existingValue, currentValue) {
-							comparisonResult := CompareObjectKeys(
-								reflect.ValueOf(currentValue).MapKeys(),
-								reflect.ValueOf(existingValue).MapKeys(),
-							)
-							if !comparisonResult {
-								keyname = fmt.Sprintf("%s_%s", keyname, Uuidv4())
-								elem = struct {
-									value interface{}
-									count int
-								}{value: currentValue}
-							}
-						}
-					}
-					elem.count++
-					allFields[keyname] = elem
-				}
-			}
-
-			keys := reflect.ValueOf(allFields).MapKeys()
-			structFields := make(map[string]interface{})
-			omitempty := make(map[string]bool)
-
-			for _, key := range keys {
-				keyname := key.Interface().(string)
-				elem := allFields[keyname]
-
-				structFields[keyname] = elem.value
-				omitempty[keyname] = elem.count != len(v)
-			}
-
-			parseStruct(depth+1, innerTabs, structFields, omitempty)
-		} else if sliceType == "slice" {
-			parseScope(v[0], depth)
-		} else {
-			if depth >= 2 {
-				appender("[]" + sliceType)
-			} else {
-				Append("[]" + sliceType)
-			}
-		}
-	case map[string]interface{}:
-		if depth >= 2 {
-			appender(parent)
-		} else {
-			Append(parent)
-		}
-		parseStruct(depth+1, innerTabs, v, nil)
-	default:
-		if depth >= 2 {
-			appender(goType(v))
-		} else {
-			Append(goType(v))
-		}
-	}
+	return keys
 }
 
 func extractKeys(keys []reflect.Value) []string {
@@ -437,95 +400,128 @@ func extractKeys(keys []reflect.Value) []string {
 	return result
 }
 
-func parseStruct(depth int, innerTabs int, scope map[string]interface{}, omitempty map[string]bool) {
-	if flattens {
-		stack = append(stack, strings.Repeat("\t", innerTabs))
+func (c *JSONToGoConverter) IsDatetimeString(str string) bool {
+	_, err := time.Parse(time.RFC3339, str)
+	return err == nil
+}
+
+func (c *JSONToGoConverter) formatScopeKeys(keys []string) []string {
+	for i := range keys {
+		keys[i] = c.Format(keys[i])
 	}
+	return keys
+}
 
-	// var seenTypeNames []string{}
+func isDigit(s string) bool {
+	_, err := strconv.Atoi(s)
+	return err == nil
+}
 
-	seenTypeNames := []string{}
-	if flattens && depth >= 2 {
-		parentType := fmt.Sprintf("type %s struct {\n", parent)
-		scopeKeys := FormatScopeKeys(extractKeys(reflect.ValueOf(scope).MapKeys()))
-		if seen, ok := seen[parent]; ok && reflect.DeepEqual(scopeKeys, seen) {
-			stack = stack[:len(stack)-1]
-			return
+func contains(arr []string, str string) bool {
+	for _, a := range arr {
+		if a == str {
+			return true
 		}
-		seen[parent] = scopeKeys
-
-		appender(parentType)
-		innerTabs++
-		keys := reflect.ValueOf(scope).MapKeys()
-		for _, key := range keys {
-			keyname := GetOriginalName(key.String())
-			indenter(innerTabs)
-			typename := uniqueTypeName(Format(keyname), seenTypeNames)
-			seenTypeNames = append(seenTypeNames, typename)
-
-			appender(typename + " ")
-			parent = typename
-			parseScope(scope[key.String()], depth)
-			appender(fmt.Sprintf("`json:\"%s", keyname))
-			if allOmitemptys || (omitempty != nil && omitempty[key.String()]) {
-				appender(",omitempty")
-			}
-			appender("\"`\n")
-		}
-		indenter(innerTabs - 1)
-		appender("}")
-	} else {
-		Append("struct {\n")
-		tabs++
-		keys := reflect.ValueOf(scope).MapKeys()
-		for _, key := range keys {
-			keyname := GetOriginalName(key.String())
-			indent(tabs)
-			typename := uniqueTypeName(Format(keyname), seenTypeNames)
-			seenTypeNames = append(seenTypeNames, typename)
-
-			Append(typename + " ")
-			parent = typename
-			parseScope(scope[key.String()], depth)
-			Append(fmt.Sprintf("`json:\"%s", keyname))
-			if allOmitemptys || (omitempty != nil && omitempty[key.String()]) {
-				Append(",omitempty")
-			}
-			if examples && scope[key.String()] != "" && reflect.TypeOf(scope[key.String()]).Kind() != reflect.Map {
-				Append(fmt.Sprintf("\" example:\"%v", scope[key.String()]))
-			}
-			Append("\"`\n")
-		}
-		indent(tabs - 1)
-		Append("}")
 	}
-
-	if flattens {
-		accumulator += stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-	}
+	return false
 }
 
-func appender(str string) {
-	stack[len(stack)-1] += str
-}
-
-func indent(tabs int) {
-	for i := 0; i < tabs; i++ {
-		goCode += "\t"
-	}
-}
-
-func indenter(tabs int) {
-	for i := 0; i < tabs; i++ {
-		stack[len(stack)-1] += "\t"
-	}
-}
 func main() {
+	jsonInput := `
+	[
+    {
+        "metadata": {
+            "record_type": "S",
+            "zip_type": "Standard",
+            "county_fips": "24510",
+            "county_name": "Baltimore City",
+            "carrier_route": "C047",
+            "congressional_district": "07",
+            "rdi": "Residential",
+            "elot_sequence": "0059",
+            "elot_sort": "A",
+            "latitude": 39.28602,
+            "longitude": -76.6689,
+            "precision": "Zip9",
+            "time_zone": "Eastern",
+            "utc_offset": -5,
+            "dst": true
+        },
+        "analysis": {
+            "dpv_match_code": 0,
+            "dpv_footnotes": 0,
+            "dpv_cmra": "N",
+            "dpv_vacant": "N",
+            "active": 0
+        }
+    },
+    {
+        "input_index": 0,
+        "candidate_index": 1,
+        "delivery_line_1": "1 S Rosedale St",
+        "last_line": "Baltimore MD 21229-3739",
+        "delivery_point_barcode": "212293739011",
+        "components": {
+            "primary_number": "1",
+            "street_predirection": "S",
+            "street_name": "Rosedale",
+            "street_suffix": "St",
+            "city_name": "Baltimore",
+            "state_abbreviation": "MD",
+            "zipcode": "21229",
+            "plus4_code": "3739",
+            "delivery_point": "01",
+            "delivery_point_check_digit": "1"
+        },
+        "metadata": {
+            "record_type": "S",
+            "zip_type": "Standard",
+            "county_fips": "24510",
+            "county_name": "Baltimore City",
+            "carrier_route": "C047",
+            "congressional_district": "07",
+            "rdi": "Residential",
+            "elot_sequence": "0064",
+            "elot_sort": "A",
+            "latitude": 39.2858,
+            "longitude": -76.66889,
+            "precision": "Zip9",
+            "time_zone": "Eastern",
+            "utc_offset": -5,
+            "dst": true
+        },
+        "analysis": {
+            "dpv_match_code": 0,
+            "dpv_footnotes": 0,
+            "dpv_cmra": "N",
+            "dpv_vacant": "N",
+            "active": 0
+        }
+    }
+]
+	 `
+	typeName := "EventData1"
+	b := JSONToGoConverter{}
 
-	jsonStr := `{"name": "John", "time": "2023","age":1, "city": "New York","temp":{}}`
-	typeName := "Person"
+	converter := b.NewJSONToGoConverter(jsonInput, typeName, true, false, true, false, false)
+	result := converter.Convert()
+	goCode := fmt.Sprintf("package main\n\n%s", result)
 
-	res, _ := jsonToGo(jsonStr, typeName, false, false, true)
-	fmt.Println(res)
+	// Write the Go code to a file
+	filePath := "generated_struct.go"
+	err := ioutil.WriteFile(filePath, []byte(goCode), 0644)
+	if err != nil {
+		fmt.Println("Error writing to file:", err)
+		return
+	}
+	fmt.Println(formatGoCode("./generated_struct.go"))
+
+	fmt.Printf("Go code written to %s\n", filePath)
+}
+
+func formatGoCode(filePath string) error {
+	cmd := exec.Command("gofmt", "-w", "-e", filePath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
