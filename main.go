@@ -13,7 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/araddon/dateparse"
 )
 
 type JSONToGoConverter struct {
@@ -128,6 +129,12 @@ func (c *JSONToGoConverter) ParseScope(scope interface{}, depth int) {
 	}
 }
 
+func (c *JSONToGoConverter) SortMapkey(keys []reflect.Value) {
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].Interface().(string) < keys[j].Interface().(string)
+	})
+}
+
 func (c *JSONToGoConverter) ParseStruct(depth int, innerTabs int, scope map[string]interface{}, omitempty map[string]bool) {
 	if c.Flatten {
 		c.Stack = append(c.Stack, strings.Repeat("\t", innerTabs))
@@ -147,7 +154,7 @@ func (c *JSONToGoConverter) ParseStruct(depth int, innerTabs int, scope map[stri
 		c.Appender(fmt.Sprintf("%s struct {\n", parentType))
 		c.InnerTabs += 1
 		keys := reflect.ValueOf(scope).MapKeys()
-
+		c.SortMapkey(keys)
 		for _, key := range keys {
 			keyName := c.GetOriginalName(key.String())
 			c.Indenter(c.InnerTabs)
@@ -169,7 +176,7 @@ func (c *JSONToGoConverter) ParseStruct(depth int, innerTabs int, scope map[stri
 		c.Append("struct {\n")
 		c.Tabs += 1
 		keys := reflect.ValueOf(scope).MapKeys()
-		// sort.Strings(keys)
+		c.SortMapkey(keys)
 		for _, key := range keys {
 			keyName := c.GetOriginalName(key.String())
 			c.Indent(c.Tabs)
@@ -223,14 +230,14 @@ func (c *JSONToGoConverter) Appender(str string) {
 }
 
 func (c *JSONToGoConverter) UniqueTypeName(name string, seen []string) string {
-	if !contains(seen, name) {
+	if !slices.Contains(seen, name) {
 		return name
 	}
 
 	i := 0
 	for {
 		newName := name + strconv.Itoa(i)
-		if !contains(seen, newName) {
+		if !slices.Contains(seen, newName) {
 			return newName
 		}
 		i++
@@ -291,7 +298,6 @@ func (c *JSONToGoConverter) GoType(val interface{}) string {
 	case map[string]interface{}:
 		return "struct"
 	default:
-		fmt.Println(val)
 		return "any"
 	}
 }
@@ -378,20 +384,6 @@ func (c *JSONToGoConverter) GetOriginalName(unique string) string {
 	return unique
 }
 
-func (c *JSONToGoConverter) CompareObjects(objectA, objectB interface{}) bool {
-	typeObject := reflect.TypeOf(map[string]interface{}{})
-
-	return reflect.TypeOf(objectA) == typeObject &&
-		reflect.TypeOf(objectB) == typeObject
-}
-
-func (c *JSONToGoConverter) FormatScopeKeys(keys []string) []string {
-	for i := range keys {
-		keys[i] = c.Format(keys[i])
-	}
-	return keys
-}
-
 func extractKeys(keys []reflect.Value) []string {
 	result := make([]string, len(keys))
 	for i, key := range keys {
@@ -401,7 +393,7 @@ func extractKeys(keys []reflect.Value) []string {
 }
 
 func (c *JSONToGoConverter) IsDatetimeString(str string) bool {
-	_, err := time.Parse(time.RFC3339, str)
+	_, err := dateparse.ParseAny(str)
 	return err == nil
 }
 
@@ -427,89 +419,20 @@ func contains(arr []string, str string) bool {
 }
 
 func main() {
-	jsonInput := `
-	[
-    {
-        "metadata": {
-            "record_type": "S",
-            "zip_type": "Standard",
-            "county_fips": "24510",
-            "county_name": "Baltimore City",
-            "carrier_route": "C047",
-            "congressional_district": "07",
-            "rdi": "Residential",
-            "elot_sequence": "0059",
-            "elot_sort": "A",
-            "latitude": 39.28602,
-            "longitude": -76.6689,
-            "precision": "Zip9",
-            "time_zone": "Eastern",
-            "utc_offset": -5,
-            "dst": true
-        },
-        "analysis": {
-            "dpv_match_code": 0,
-            "dpv_footnotes": 0,
-            "dpv_cmra": "N",
-            "dpv_vacant": "N",
-            "active": 0
-        }
-    },
-    {
-        "input_index": 0,
-        "candidate_index": 1,
-        "delivery_line_1": "1 S Rosedale St",
-        "last_line": "Baltimore MD 21229-3739",
-        "delivery_point_barcode": "212293739011",
-        "components": {
-            "primary_number": "1",
-            "street_predirection": "S",
-            "street_name": "Rosedale",
-            "street_suffix": "St",
-            "city_name": "Baltimore",
-            "state_abbreviation": "MD",
-            "zipcode": "21229",
-            "plus4_code": "3739",
-            "delivery_point": "01",
-            "delivery_point_check_digit": "1"
-        },
-        "metadata": {
-            "record_type": "S",
-            "zip_type": "Standard",
-            "county_fips": "24510",
-            "county_name": "Baltimore City",
-            "carrier_route": "C047",
-            "congressional_district": "07",
-            "rdi": "Residential",
-            "elot_sequence": "0064",
-            "elot_sort": "A",
-            "latitude": 39.2858,
-            "longitude": -76.66889,
-            "precision": "Zip9",
-            "time_zone": "Eastern",
-            "utc_offset": -5,
-            "dst": true
-        },
-        "analysis": {
-            "dpv_match_code": 0,
-            "dpv_footnotes": 0,
-            "dpv_cmra": "N",
-            "dpv_vacant": "N",
-            "active": 0
-        }
-    }
-]
-	 `
-	typeName := "EventData1"
-	b := JSONToGoConverter{}
 
-	converter := b.NewJSONToGoConverter(jsonInput, typeName, true, false, true, false, false)
+	res, err := os.ReadFile("./input.json")
+	if err != nil {
+		fmt.Println(err)
+	}
+	typeName := "SysvarsInit"
+	b := JSONToGoConverter{}
+	converter := b.NewJSONToGoConverter(string(res), typeName, true, false, true, false, false)
 	result := converter.Convert()
 	goCode := fmt.Sprintf("package main\n\n%s", result)
 
 	// Write the Go code to a file
 	filePath := "generated_struct.go"
-	err := ioutil.WriteFile(filePath, []byte(goCode), 0644)
+	err = ioutil.WriteFile(filePath, []byte(goCode), 0644)
 	if err != nil {
 		fmt.Println("Error writing to file:", err)
 		return
