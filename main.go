@@ -223,14 +223,14 @@ func (c *JSONToGoConverter) Appender(str string) {
 }
 
 func (c *JSONToGoConverter) UniqueTypeName(name string, seen []string) string {
-	if !contains(seen, name) {
+	if !slices.Contains(seen, name) {
 		return name
 	}
 
 	i := 0
 	for {
 		newName := name + strconv.Itoa(i)
-		if !contains(seen, newName) {
+		if !slices.Contains(seen, newName) {
 			return newName
 		}
 		i++
@@ -291,7 +291,6 @@ func (c *JSONToGoConverter) GoType(val interface{}) string {
 	case map[string]interface{}:
 		return "struct"
 	default:
-		fmt.Println(val)
 		return "any"
 	}
 }
@@ -376,20 +375,6 @@ func (c *JSONToGoConverter) GetOriginalName(unique string) string {
 		}
 	}
 	return unique
-}
-
-func (c *JSONToGoConverter) CompareObjects(objectA, objectB interface{}) bool {
-	typeObject := reflect.TypeOf(map[string]interface{}{})
-
-	return reflect.TypeOf(objectA) == typeObject &&
-		reflect.TypeOf(objectB) == typeObject
-}
-
-func (c *JSONToGoConverter) FormatScopeKeys(keys []string) []string {
-	for i := range keys {
-		keys[i] = c.Format(keys[i])
-	}
-	return keys
 }
 
 func extractKeys(keys []reflect.Value) []string {
