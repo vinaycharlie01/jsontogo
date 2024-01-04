@@ -128,6 +128,12 @@ func (c *JSONToGoConverter) ParseScope(scope interface{}, depth int) {
 	}
 }
 
+func (c *JSONToGoConverter) SortMapkey(keys []reflect.Value) {
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].Interface().(string) < keys[j].Interface().(string)
+	})
+}
+
 func (c *JSONToGoConverter) ParseStruct(depth int, innerTabs int, scope map[string]interface{}, omitempty map[string]bool) {
 	if c.Flatten {
 		c.Stack = append(c.Stack, strings.Repeat("\t", innerTabs))
@@ -147,7 +153,7 @@ func (c *JSONToGoConverter) ParseStruct(depth int, innerTabs int, scope map[stri
 		c.Appender(fmt.Sprintf("%s struct {\n", parentType))
 		c.InnerTabs += 1
 		keys := reflect.ValueOf(scope).MapKeys()
-
+		c.SortMapkey(keys)
 		for _, key := range keys {
 			keyName := c.GetOriginalName(key.String())
 			c.Indenter(c.InnerTabs)
@@ -169,7 +175,7 @@ func (c *JSONToGoConverter) ParseStruct(depth int, innerTabs int, scope map[stri
 		c.Append("struct {\n")
 		c.Tabs += 1
 		keys := reflect.ValueOf(scope).MapKeys()
-		// sort.Strings(keys)
+		c.SortMapkey(keys)
 		for _, key := range keys {
 			keyName := c.GetOriginalName(key.String())
 			c.Indent(c.Tabs)
