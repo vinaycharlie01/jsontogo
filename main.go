@@ -13,7 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/araddon/dateparse"
 )
 
 type JSONToGoConverter struct {
@@ -392,7 +393,7 @@ func extractKeys(keys []reflect.Value) []string {
 }
 
 func (c *JSONToGoConverter) IsDatetimeString(str string) bool {
-	_, err := time.Parse(time.RFC3339, str)
+	_, err := dateparse.ParseAny(str)
 	return err == nil
 }
 
@@ -418,89 +419,20 @@ func contains(arr []string, str string) bool {
 }
 
 func main() {
-	jsonInput := `
-	[
-    {
-        "metadata": {
-            "record_type": "S",
-            "zip_type": "Standard",
-            "county_fips": "24510",
-            "county_name": "Baltimore City",
-            "carrier_route": "C047",
-            "congressional_district": "07",
-            "rdi": "Residential",
-            "elot_sequence": "0059",
-            "elot_sort": "A",
-            "latitude": 39.28602,
-            "longitude": -76.6689,
-            "precision": "Zip9",
-            "time_zone": "Eastern",
-            "utc_offset": -5,
-            "dst": true
-        },
-        "analysis": {
-            "dpv_match_code": 0,
-            "dpv_footnotes": 0,
-            "dpv_cmra": "N",
-            "dpv_vacant": "N",
-            "active": 0
-        }
-    },
-    {
-        "input_index": 0,
-        "candidate_index": 1,
-        "delivery_line_1": "1 S Rosedale St",
-        "last_line": "Baltimore MD 21229-3739",
-        "delivery_point_barcode": "212293739011",
-        "components": {
-            "primary_number": "1",
-            "street_predirection": "S",
-            "street_name": "Rosedale",
-            "street_suffix": "St",
-            "city_name": "Baltimore",
-            "state_abbreviation": "MD",
-            "zipcode": "21229",
-            "plus4_code": "3739",
-            "delivery_point": "01",
-            "delivery_point_check_digit": "1"
-        },
-        "metadata": {
-            "record_type": "S",
-            "zip_type": "Standard",
-            "county_fips": "24510",
-            "county_name": "Baltimore City",
-            "carrier_route": "C047",
-            "congressional_district": "07",
-            "rdi": "Residential",
-            "elot_sequence": "0064",
-            "elot_sort": "A",
-            "latitude": 39.2858,
-            "longitude": -76.66889,
-            "precision": "Zip9",
-            "time_zone": "Eastern",
-            "utc_offset": -5,
-            "dst": true
-        },
-        "analysis": {
-            "dpv_match_code": 0,
-            "dpv_footnotes": 0,
-            "dpv_cmra": "N",
-            "dpv_vacant": "N",
-            "active": 0
-        }
-    }
-]
-	 `
-	typeName := "EventData1"
-	b := JSONToGoConverter{}
 
-	converter := b.NewJSONToGoConverter(jsonInput, typeName, true, false, true, false, false)
+	res, err := os.ReadFile("./input.json")
+	if err != nil {
+		fmt.Println(err)
+	}
+	typeName := "SysvarsInit"
+	b := JSONToGoConverter{}
+	converter := b.NewJSONToGoConverter(string(res), typeName, true, false, true, false, false)
 	result := converter.Convert()
 	goCode := fmt.Sprintf("package main\n\n%s", result)
 
 	// Write the Go code to a file
 	filePath := "generated_struct.go"
-	err := ioutil.WriteFile(filePath, []byte(goCode), 0644)
+	err = ioutil.WriteFile(filePath, []byte(goCode), 0644)
 	if err != nil {
 		fmt.Println("Error writing to file:", err)
 		return
