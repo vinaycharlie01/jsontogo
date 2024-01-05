@@ -1,7 +1,12 @@
 # json-to-go
 
-### its genarate struct field like below.
 
+
+### jsonToStruct
+Golang code generator for creating struct from json.
+
+### INSTALLATION
+go get github.com/vinaycharlie01/jsontogo
 
 ```go
 
