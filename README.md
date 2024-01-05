@@ -8,6 +8,19 @@ Golang code generator for creating struct from json.
 ### INSTALLATION
 go get github.com/vinaycharlie01/jsontogo
 
+
+## Introduction
+
+The JSON to Go Struct Converter is a Go code designed to generate Go struct definitions from JSON input. It aims to simplify the process of creating Go structs corresponding to JSON data structures
+
+## Features
+
+- Automatic generation of Go struct definitions from JSON input.
+- Configurable options for struct naming, flattening, and field tags.
+- Handling of nested structures, arrays, and basic data types.
+- Deduplication of struct types based on field names and types.
+- Support for "omitempty" field tags based on input data.
+
 ```go
 
  
